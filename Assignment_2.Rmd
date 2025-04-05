@@ -1,0 +1,152 @@
+---
+title: "Text Analysis and Spatial Data for Economists"
+subtitle: "Assignment 2"
+author: Haoyu Yang
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+  toc: yes
+toc_float: true
+toc_collapsed: true
+--- 
+
+```{r setup, include=T , message = F}
+library(raster)
+library(dplyr) 
+library(leaflet)
+library(rmapshaper) 
+library(RColorBrewer) 
+library(mapview) 
+library(sf) 
+library(spData) 
+library(ggplot2) 
+library(rstudioapi)
+library(gridExtra)
+library(magrittr) 
+```
+
+
+
+```{r, eval = FALSE, include = FALSE}
+# clean working environment
+rm(list = ls())
+```
+
+
+# Raster data
+
+## Getting raster data
+
+For this assignment, we will use the municipality boundary and the housing price data we have already used in the last assignment. 
+
+```{r}
+# Load here municipality boundary and housing prices from the previous assignment
+setwd("~/Documents/forth_semester/text")
+hp <- st_read("./hp_small.csv", 
+  options = c("X_POSSIBLE_NAMES=longitude2", "Y_POSSIBLE_NAMES=latitude2"), 
+  stringsAsFactors = FALSE, 
+  crs = 4326 
+)
+municipality_bound <- st_read("data/raw/Swiss boundary/swissBOUNDARIES3D_1_5_TLM_HOHEITSGEBIET.shp")
+
+```
+
+
+We will complement these data with two raster datasets:
+
++ Visit [https://www.swisstopo.admin.ch/en/geodata/height.html](https://www.swisstopo.admin.ch/en/geodata/height.html) and download the *Digital Height Model 25/200* for Switzerland.
+
+  + Read the file `DHM200.xyz` as a raster. Check its CRS and assign a value if needed. If this information is missing, retrieve the relevant CRS in the documentation and assign to your object using the function `crs(x) <- value`. Use an EPSG code as a `proj4string` definition with `"+init=epsg:MY_NUMBER"` (so the command is:  `crs(x) <- "+init=epsg:MY_NUMBER"`). You will probably get warnings while assigning the CRS. This is due to a migration from `proj4string` towards `PROJ6` standards. You can ignore these warnings.
+
+
+```{r}
+# Load the file DHM200.xyz from the Digital Height Model 25/200 for Switzerland
+# Assign the correct CRS if needed
+
+raster_DHM <- raster("DHM200.xyz")
+
+crs(raster_DHM) <- "+init=epsg:21781"
+
+mapview(raster_DHM)
+
+```
+
++ Visit [https://map.geo.admin.ch](https://map.geo.admin.ch) and downloard the daytime road traffic noise exposure from the Federal Office for the Environment.
+  
+  + Read the file `StrassenLaerm_Tag.tif` (that is in the folder `STRASSENLAERM_Tag` that you downloaded) as a raster. Check its CRS and assign a value if needed.
+
+```{r}
+# Load the file StrassenLaerm_Tag.tif
+raster_Strassen <- raster("StrassenLaerm_Tag.tif")
+crs(raster_Strassen)
+```
+
+
+## Raster extraction
+
++ Assign to the housing price data the level of noise exposure for that location. 
+
+```{r}
+# Step 1: reproject the vector object to the CRS of the raster data
+hp <- st_transform(hp, crs(raster_Strassen))
+
+# Step 2: extract the values for the corresponding raster's cell
+hp$noise_level <-raster::extract(raster_Strassen, hp)
+mapview(hp, zcol = "noise_level")
+```
+
+
+## Rasterization
+
++ Rasterize the dataset on housing prices to show the average price per square meters (`a_brutm_m2`) for grids of 1,000m x 1,000m 
+  + Create a raster template using housing price data. 
+  + Convert (`a_brutm_m2`) into numeric using the functions `as.numeric(as.character(x))`
+
+```{r}
+# Convert factor variable into numeric
+hp$a_brutm_m2 <- as.numeric(as.character(hp$a_brutm_m2))
+# Create raster template
+ras_temp <- raster(extent(hp), resolution = c(1000, 1000))
+# Rasterize 
+price_raster <- rasterize(hp, ras_temp, field = "a_brutm_m2", fun = mean)
+# Plot
+plot(price_raster, main = "Average Price per square meter (1000x1000m)")
+```
+
+## Spatial vectorization
+
++ Create contour lines for 250, 500, 1000 and 2000 m.a.s.l for the digital height model. Use a mask to select only the data for Switzerland.
+  + Create a polygon for Switzerland based on the municipality boundary data. Remove the z geometry using `st_zm()` and reproject the data.
+  + Store the polygon as `Spatial` object (with `as(x,"Spatial")`).
+  + Create a mask for the the raster data
+  + Create contour lines for the desired levels (look at `?rasterToContour` to create the desired lines).
+
+```{r}
+# Create a polygon for Switzerland
+swiss_bound <- municipality_bound %>% 
+  st_union() %>%          
+  st_zm() %>%             
+  st_transform(crs(raster_DHM))  
+swiss_bound_sp <- as(swiss_bound, "Spatial")
+# Create a mask for raster data
+dhm_mask <- mask(raster_DHM, swiss_bound_sp)
+# Create contour lines
+contours <- rasterToContour(dhm_mask, levels = c(250, 500, 1000, 2000))
+mapview(contours)
+```
+
++ Create a hillshade layer to use as a basemap for the noise data
+
+```{r}
+# Create a hill shade layer and mask cells outside Switzerland
+slope <- terrain(dhm_mask, opt = "slope")
+aspect <- terrain(dhm_mask, opt = "aspect")
+hill <- hillShade(slope, aspect)
+hill_mask <- mask(hill, swiss_bound_sp)
+# Plot hill shade and noise data
+mapview(hill_mask, layer.name = "Hill") + 
+  mapview(hp, zcol = "noise_level", layer.name = "Noise Level")
+
+
+```
+
